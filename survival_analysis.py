@@ -30,7 +30,6 @@ def simulate_survival_data(n_observations = 1000, n_events = 100, min_time = 12,
     
     return time, event.astype('bool'), score
 
-# model score can be used as a covariate in the cox-regression model
 time, event, model_score = simulate_survival_data(n_observations = 2000, n_events = 200, min_time = 12, max_time = 120)
 
 ################ Kaplan-Meier Curve ###########
