@@ -3,7 +3,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sksurv.nonparametric import kaplan_meier_estimator
 from sksurv.linear_model import CoxPHSurvivalAnalysis
-from sklearn.pipeline import Pipeline
 from sksurv.util import Surv
 plt.rcParams["font.size"] = 16
 plt.rcParams["font.family"] = 'Times New Roman'
@@ -18,8 +17,8 @@ def simulate_survival_data(n_observations = 1000, n_events = 100, min_time = 12,
     event[:n_events] = 1        
 
     score = np.zeros(n_observations,)
-    score[event == 1] = np.random.normal(loc=0.55, scale=0.2, size=np.sum(event == 1)) # normal probs for events
-    score[event == 0] = np.random.normal(loc=0.45, scale=0.2, size=np.sum(event == 0)) # normal probs for censored events
+    score[event == 1] = np.random.normal(loc=0.51, scale=0.2, size=np.sum(event == 1)) # normal probs for events
+    score[event == 0] = np.random.normal(loc=0.49, scale=0.2, size=np.sum(event == 0)) # normal probs for censored events
     score = np.clip(score, 0, 1) 
     
     indices = np.arange(n_observations)
@@ -55,8 +54,34 @@ del xx, yy, conf_int,idx,absolute_prob,absolute_prob_ci
 
 ################ Concordance Index ###########
 from sksurv.metrics import concordance_index_censored
-c_index = concordance_index_censored(event, time, model_score)
-print('c-index = ' +str(np.round(c_index[0],2)))
+from tqdm import tqdm
+def bootstrap_ci_c_index(y_event, y_time, scores, n_bootstraps=1000, ci=0.95, random_state=42):
+    rng = np.random.default_rng(random_state)
+    c_indices = []
+
+    n = len(y_time)
+    y_structured = np.array([(e, t) for e, t in zip(y_event, y_time)],
+                            dtype=[('event', 'bool'), ('time', 'f8')])
+    
+    for _ in tqdm(range(n_bootstraps)):
+        indices = rng.integers(0, n, n)
+        y_sample = y_structured[indices]
+        scores_sample = scores[indices]
+
+        c_index, *_ = concordance_index_censored(
+            y_sample["event"], y_sample["time"], scores_sample
+        )
+        c_indices.append(c_index)
+
+    lower = np.percentile(c_indices, ((1 - ci) / 2) * 100)
+    upper = np.percentile(c_indices, (1 - (1 - ci) / 2) * 100)
+
+    point_estimate, *_ = concordance_index_censored(y_structured["event"], y_structured["time"], scores)
+
+    return point_estimate, lower, upper
+
+ci_index, ci_lower, ci_upper = bootstrap_ci_c_index(event, time, model_score, n_bootstraps=1000, ci=0.95, random_state=42)
+print('C-index = ' +str(np.round(ci_index,2))+' ['+str(np.round(ci_lower,2))+', '+str(np.round(ci_upper,2))+'] 95% CI')
 
 ################ Kaplan-Meier Curve Score Cutoff ###########
 score_cutoff = np.median(model_score)
@@ -90,7 +115,7 @@ plt.show()
 del xx, yy, conf_int,absolute_prob,absolute_prob_ci,idx,relative_risk
 
 ################ Calibration Plot ###########
-prediced_risk_at_month = 50
+prediced_risk_at_month = 100
 
 predicted_risk = []
 predicred_risk_ci = []
@@ -115,7 +140,7 @@ for i in np.arange(0,1,0.1):
     plt.show()    
     predicted_risk.append(1-absolute_prob)
     predicred_risk_ci.append([1-absolute_prob_ci[0],1-absolute_prob_ci[1]])
-    del xx, yy, conf_int,score_range,event_range,time_range,absolute_prob,idx
+del xx, yy, conf_int,score_range,event_range,time_range,absolute_prob,absolute_prob_ci,idx,
 predicred_risk_ci = np.array(predicred_risk_ci).T
 predicred_risk_ci[0,:]= predicted_risk-predicred_risk_ci[0,:]
 predicred_risk_ci[1,:]= predicred_risk_ci[1,:]-predicted_risk
@@ -133,13 +158,29 @@ plt.gca().set_aspect('equal', adjustable='box')
 plt.show()
 
 ################ Cox Regression Model ###########
+from sklearn.utils import resample
+def bootstrap_cox_hr_ci(x, y, n_bootstrap=1000, alpha=0.05):
+    coefs_list = []
+
+    for _ in tqdm(range(n_bootstrap)):
+        x_sample, y_sample = resample(x, y, replace=True)        
+        model = CoxPHSurvivalAnalysis().fit(x_sample, y_sample)
+        coefs_list.append(model.coef_)        
+
+    coefs_array = np.vstack(coefs_list)
+    hr_median = np.exp(np.mean(coefs_array, axis=0))
+    lower = np.exp(np.percentile(coefs_array, 100 * alpha / 2, axis=0))
+    upper = np.exp(np.percentile(coefs_array, 100 * (1 - alpha / 2), axis=0))
+    
+    return hr_median, lower, upper
+
 x = pd.DataFrame(model_score, columns=["Algorithm Score"])
 y = Surv.from_arrays(event=event, time=time)
-pipe = Pipeline([('cox_model', CoxPHSurvivalAnalysis())])
-pipe.fit(x, y)
-print('Hazard Ratio = '+str(np.round(np.exp(pipe['cox_model'].coef_)[0],2)))
+hr, hr_lower_ci, hr_upper_ci = bootstrap_cox_hr_ci(x, y, n_bootstrap=1000, alpha=0.05)
 del x, y
+print('HR = ' +str(np.round(hr[0],2))+' ['+str(np.round(hr_lower_ci[0],2))+', '+str(np.round(hr_upper_ci[0],2))+'] 95% CI')
 
+################ Model Scores ###########
 plt.figure()
 plt.hist(model_score[event==1],100, facecolor = 'r', alpha = 0.8)
 plt.hist(model_score[event==0],100, facecolor = 'b', alpha = 0.2)
